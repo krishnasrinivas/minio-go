@@ -67,6 +67,8 @@ func (c Client) GetObject(bucketName, objectName string) (*Object, error) {
 	var httpReader io.ReadCloser
 	var objectInfo ObjectInfo
 	var err error
+	var etag string
+
 	// Create request channel.
 	reqCh := make(chan getRequest)
 	// Create response channel.
@@ -105,7 +107,7 @@ func (c Client) GetObject(bucketName, objectName string) (*Object, error) {
 							// Do not set objectInfo from the first readAt request because it will not get
 							// the whole object.
 							reqHeaders.SetRange(req.Offset, req.Offset+int64(len(req.Buffer))-1)
-							httpReader, _, err = c.getObject(bucketName, objectName, reqHeaders)
+							httpReader, objectInfo, err = c.getObject(bucketName, objectName, reqHeaders)
 						} else {
 							reqHeaders.SetRange(req.Offset, 0)
 							// First request is a Read request.
@@ -117,6 +119,7 @@ func (c Client) GetObject(bucketName, objectName string) (*Object, error) {
 							}
 							return
 						}
+						etag = objectInfo.ETag
 						// Read at least firstReq.Buffer bytes, if not we have
 						// reached our EOF.
 						size, err := io.ReadFull(httpReader, req.Buffer)
@@ -143,13 +146,18 @@ func (c Client) GetObject(bucketName, objectName string) (*Object, error) {
 							// Exit the go-routine.
 							return
 						}
+						etag = objectInfo.ETag
 						// Send back the first response.
 						resCh <- getResponse{
 							objectInfo: objectInfo,
 						}
 					}
 				} else if req.settingObjectInfo { // Request is just to get objectInfo.
-					objectInfo, err := c.StatObject(bucketName, objectName)
+					reqHeaders := NewGetReqHeaders()
+					if etag != "" {
+						reqHeaders.SetMatchETag(etag)
+					}
+					objectInfo, err := c.statObject(bucketName, objectName, reqHeaders)
 					if err != nil {
 						resCh <- getResponse{
 							Error: err,
@@ -170,6 +178,9 @@ func (c Client) GetObject(bucketName, objectName string) (*Object, error) {
 					// All readAt requests are new requests.
 					if req.DidOffsetChange || !req.beenRead {
 						reqHeaders := NewGetReqHeaders()
+						if etag != "" {
+							reqHeaders.SetMatchETag(etag)
+						}
 						if httpReader != nil {
 							// Close previously opened http reader.
 							httpReader.Close()
